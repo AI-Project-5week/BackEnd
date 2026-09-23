@@ -4,11 +4,26 @@
 테스트 화면:  http://localhost:8000/docs
 """
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
+import ai
 import database as db
-from schemas import CATEGORIES, MONTH_PATTERN, Budget, Expense, ExpenseIn, Stats
+from schemas import (
+    CATEGORIES,
+    MONTH_PATTERN,
+    Budget,
+    ChatRequest,
+    ChatResponse,
+    Expense,
+    ExpenseIn,
+    ParseRequest,
+    ParseResponse,
+    ReportResponse,
+    Stats,
+)
 
 
 @asynccontextmanager
@@ -18,6 +33,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI 가계부 API", lifespan=lifespan)
+
+
+@app.exception_handler(ai.AIError)
+async def ai_error_handler(request: Request, exc: ai.AIError):
+    # Ollama가 꺼져 있거나 모델이 없을 때 → 503 (프론트는 "서버 오류 (503)"으로 표시)
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def month_query():
@@ -66,5 +87,22 @@ def get_stats(month: str = month_query()) -> Stats:
     return db.get_stats(month)
 
 
-# ---------- AI (다음 단계에서 구현) ----------
-# POST /parse, POST /chat, GET /report
+# ---------- AI ----------
+# Ollama 응답을 기다리는 동안 다른 요청이 막히지 않도록 async 없이 def로 둔다
+# (FastAPI가 별도 스레드에서 실행해 준다).
+
+@app.post("/parse")
+def parse(req: ParseRequest) -> ParseResponse:
+    return ai.parse_expense(req.text)
+
+
+@app.post("/chat")
+def chat(req: ChatRequest) -> ChatResponse:
+    month = req.month or date.today().strftime("%Y-%m")
+    history = [m.model_dump() for m in req.history]
+    return ChatResponse(answer=ai.chat(month, req.message, history))
+
+
+@app.get("/report")
+def report(month: str = month_query()) -> ReportResponse:
+    return ReportResponse(report=ai.report(month))
